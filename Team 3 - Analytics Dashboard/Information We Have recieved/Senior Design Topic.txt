@@ -1,0 +1,3 @@
+Welcome to 2026-2027 Southern California Edison (SCE) Senior Design Project! This year we are working with SCE to give a real-world application, here is the project description: AI-Assisted Transmission Planning: The goal of this project is to develop an AI application that assists engineers in interpreting planning study results, which could include functions to analyze contingency violations, classify reliability issues, suggest mitigation alternatives, generate a planning report, and summarize simulation results for management.
+
+Our part of project task is TPL-001-5.1 P0-P7

@@ -1,0 +1,2 @@
+Potential technologies include Python, pandas, PostgreSQL, Streamlit or a React frontend, PDF extraction libraries, an embedding model, and an LLM API. The team should select tools based on the CSULA’s resources and SCE’s security requirements.
+Python, pandas, PostgreSQL, Streamlit

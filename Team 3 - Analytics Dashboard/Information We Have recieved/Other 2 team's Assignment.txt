@@ -1,0 +1,5 @@
+- Team 1 — PDF Ingestion & Extraction 
+  Build the pipeline that takes CAISO/SCE PDFs and extracts facilities, contingencies, scenarios, loading results, mitigation text, and source page references. They should also flag uncertain extractions. This corresponds to Manuel’s Module 1.    
+
+- Team 2 — Database & Normalization 
+  Own the shared schema: reports, facilities, contingencies, scenarios, findings, mitigations, evidence. They should handle canonical names, raw values like 119.0%, <100, NotConv, and traceability. This is the foundation everyone else depends on.    
