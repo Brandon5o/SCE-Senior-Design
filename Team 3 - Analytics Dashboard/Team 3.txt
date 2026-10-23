@@ -1,0 +1,3 @@
+- Team 3 — Analytics Dashboard 
+  Build filters, tables, charts, recurrence analysis, severity/persistence ranking, baseline-vs-sensitivity comparisons, and cross-report comparisons. This corresponds to Module 2.
+Streamlit
