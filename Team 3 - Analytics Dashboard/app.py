@@ -626,58 +626,59 @@ with tab_overview:
     left, right = st.columns(2)
 
     with left:
-
-        chart_df = view.dropna(
-            subset=["loading_numeric"]
-        )
-
+        chart_df = view.dropna(subset=["loading_numeric"]).copy()
         if chart_df.empty:
-
-            st.info(
-                "No numerical loading values available."
-            )
-
+            st.info("No numerical loading values available.")
         else:
-
+            # Shorten axis labels for readability; full names remain on hover and in tables.
+            facility_peaks = chart_df.groupby("facility")["loading_numeric"].max().sort_values(ascending=False)
+            visible_facilities = facility_peaks.head(12).index
+            chart_df = chart_df[chart_df["facility"].isin(visible_facilities)].copy()
+            chart_df["facility_label"] = chart_df["facility"].apply(
+                lambda name: name if len(name) <= 42 else name[:39] + "..."
+            )
             fig = px.bar(
                 chart_df,
-                x="facility",
-                y="loading_numeric",
+                x="loading_numeric",
+                y="facility_label",
                 color="report",
-                hover_data=[
-                    "contingency",
-                    "scenario",
-                    "severity"
-                ],
+                hover_data={
+                    "facility": True,
+                    "contingency": True,
+                    "scenario": True,
+                    "severity": True,
+                    "loading_numeric": ":.1f",
+                    "facility_label": False
+                },
                 barmode="group",
+                orientation="h",
                 labels={
                     "loading_numeric": "Loading (%)",
-                    "facility": "Facility"
+                    "facility_label": "Facility",
+                    "report": "Report"
                 },
-                title="Loading by Facility and Report"
+                title="Highest Facility Loadings by Report"
             )
-
-            fig.add_hline(
-                y=threshold,
+            fig.add_vline(
+                x=threshold,
                 line_dash="dash",
                 line_color="red",
-                annotation_text=f"Threshold {threshold}%"
+                annotation_text=f"Threshold {threshold}%",
+                annotation_position="top"
             )
-
-            st.plotly_chart(
-                fig,
-                use_container_width=True
+            fig.update_layout(
+                height=max(380, 38 * chart_df["facility"].nunique()),
+                margin=dict(l=20, r=20, t=75, b=35),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+                yaxis=dict(title=None, automargin=True, tickfont=dict(size=10)),
+                xaxis=dict(title="Loading (%)", rangemode="tozero")
             )
+            if len(facility_peaks) > 12:
+                st.caption("Showing the 12 facilities with the highest numeric loading; full results remain in the Findings tab.")
+            st.plotly_chart(fig, use_container_width=True)
 
     with right:
-
-        counts = view.groupby(
-            "severity",
-            as_index=False
-        ).size().rename(
-            columns={"size": "findings"}
-        )
-
+        counts = view.groupby("severity", as_index=False).size().rename(columns={"size": "findings"})
         fig = px.pie(
             counts,
             names="severity",
@@ -685,37 +686,43 @@ with tab_overview:
             title="Findings by Severity",
             hole=0.35
         )
-
-        st.plotly_chart(
-            fig,
-            use_container_width=True
+        fig.update_layout(
+            height=420,
+            margin=dict(l=15, r=15, t=60, b=25),
+            legend=dict(orientation="h", yanchor="top", y=-0.05, xanchor="center", x=0.5)
         )
+        st.plotly_chart(fig, use_container_width=True)
 
     st.subheader("Most Common Mitigation Descriptions")
-
     mitigation_counts = (
         view.groupby("mitigation", as_index=False)
         .size()
         .sort_values("size", ascending=False)
         .head(10)
     )
-
+    mitigation_counts["mitigation_label"] = mitigation_counts["mitigation"].apply(
+        lambda text: text if len(text) <= 58 else text[:55] + "..."
+    )
     fig = px.bar(
-        mitigation_counts,
+        mitigation_counts.sort_values("size"),
         x="size",
-        y="mitigation",
+        y="mitigation_label",
         orientation="h",
-        labels={
-            "size": "Findings",
-            "mitigation": "Mitigation"
-        }
+        hover_data={
+            "mitigation": True,
+            "size": True,
+            "mitigation_label": False
+        },
+        labels={"size": "Findings", "mitigation_label": "Mitigation"},
+        title="Most Common Mitigation Descriptions"
     )
-
-    st.plotly_chart(
-        fig,
-        use_container_width=True
+    fig.update_layout(
+        height=max(360, 48 * len(mitigation_counts)),
+        margin=dict(l=20, r=20, t=60, b=30),
+        yaxis=dict(title=None, automargin=True, tickfont=dict(size=10)),
+        xaxis=dict(title="Findings", rangemode="tozero")
     )
-
+    st.plotly_chart(fig, use_container_width=True)
 
 # =========================================================
 # TAB 2: FINDINGS
@@ -946,3 +953,4 @@ st.caption(
     "source page, and table references. Verify extracted "
     "values against the original PDF before engineering use."
 )
+
