@@ -31,15 +31,14 @@ from normalizer import clean_and_normalize_loading
 
 st.set_page_config(
     page_title="SCE Transmission Findings",
-    page_icon="⚡",
+    page_icon="assets/sce.png",
     layout="wide"
 )
 
 st.title("SCE Transmission Planning Findings")
 
 st.caption(
-    "Team 3 | Analytics Dashboard | "
-    "Connected to Team 1 PDF Pipeline and Team 2 Database"
+    "Analytics Dashboard"
 )
 
 
@@ -1182,10 +1181,7 @@ with tab_compare:
 st.divider()
 
 st.caption(
-    "SCE Transmission Planning Analytics | "
-    "Data pipeline: Team 1 | "
-    "Database and normalization: Team 2 | "
-    "Dashboard: Team 3"
+    "SCE Transmission Planning Analytics"
 )
 
 st.caption(
