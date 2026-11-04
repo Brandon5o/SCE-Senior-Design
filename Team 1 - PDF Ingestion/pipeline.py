@@ -3,7 +3,6 @@ import sys
 import re
 import pdfplumber
 
-# Locate Team 2 folder
 PROJECT_DIR = os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))
 )
@@ -28,6 +27,45 @@ from database import (
 )
 
 from normalizer import clean_and_normalize_loading
+
+
+# ---------------------------------------------------------
+# REPORT LAYOUT (SCE Main thermal overload tables)
+# ---------------------------------------------------------
+# Column layout of every thermal overload table:
+#   0 Overloaded Facility | 1 Contingency | 2 Category |
+#   3 Category Description | 4-14 eleven scenario columns |
+#   15 Project & Potential Mitigation Solutions
+
+SCENARIOS = [
+    "B1 2028 Summer Peak",
+    "B2 2031 Summer Peak",
+    "B3 2036 Summer Peak",
+    "B4 2041 Summer Peak",
+    "B5 2036 Summer-Off Peak",
+    "B6 2041 Winter Peak",
+    "B7 2028 Spring Off-Peak",
+    "B8 2031 Spring Off-Peak",
+    "S1 2031 SP High CEC Load",
+    "S2 2028 SP High Renewable",
+    "S3 2028 SprOP ES-Charging",
+]
+
+COL_FACILITY = 0
+COL_CONTINGENCY = 1
+COL_CATEGORY = 2
+COL_CATEGORY_DESC = 3
+FIRST_SCENARIO_COL = 4
+COL_MITIGATION = FIRST_SCENARIO_COL + len(SCENARIOS)   # 15
+EXPECTED_COLS = COL_MITIGATION + 1                      # 16
+
+# P0-P7, combined categories such as P2/P4, and N-2 style codes
+CATEGORY_RE = re.compile(r"^(P[0-7](/P[0-7])?|N\d)$")
+
+# Printed in the page footer of the source PDF
+DEFAULT_PUBLICATION_DATE = "2026-08-15"
+
+THERMAL_PAGE_MARKER = "Thermal Overloads"
 
 
 # ---------------------------------------------------------
@@ -62,26 +100,24 @@ def clean_text(value):
     return " ".join(str(value).split()).strip()
 
 
-def canonicalize_facility(raw_name):
+def clean_cell(value):
+    """
+    Clean a multi-line PDF cell. A hyphen followed by a line
+    break is a wrapped compound ('Lugo-' / 'Mohave'), so the
+    pieces are joined without a space.
+    """
 
-    if not raw_name:
-        return "Unknown Facility"
+    if value is None:
+        return ""
 
-    return clean_text(raw_name.splitlines()[0])
+    text = str(value).replace("-\n", "-")
 
+    text = clean_text(text)
 
-def extract_contingency_code(raw_text):
+    # pdfplumber occasionally spaces out letters: "l i n e _V_P7"
+    text = re.sub(r"^l i n e _", "line_", text)
 
-    match = re.search(
-        r"\b(P[0-7]|N-1-1|N-1)\b",
-        raw_text,
-        re.IGNORECASE
-    )
-
-    if match:
-        return match.group(1).upper()
-
-    return "UNKNOWN"
+    return text
 
 
 def extract_year(scenario_name):
@@ -94,117 +130,124 @@ def extract_year(scenario_name):
     return None
 
 
-def get_confidence(facility, contingency, loading, header_detected):
+def mid_y(bbox):
 
-    confidence = 0.95
-    requires_review = False
-
-    if not header_detected:
-        confidence -= 0.20
-        requires_review = True
-
-    if not facility or facility == "Unknown Facility":
-        confidence -= 0.25
-        requires_review = True
-
-    if not contingency:
-        confidence -= 0.20
-        requires_review = True
-
-    if not loading:
-        confidence -= 0.15
-        requires_review = True
-
-    return max(confidence, 0.0), requires_review
+    return (bbox[1] + bbox[3]) / 2.0
 
 
 # ---------------------------------------------------------
-# TABLE HEADER DETECTION
+# TABLE READING
 # ---------------------------------------------------------
 
-def find_column(headers, possible_names):
+def read_table_rows(table, last_facility=""):
+    """
+    Return one dict per data row of a pdfplumber Table.
 
-    for index, header in enumerate(headers):
+    The report uses merged cells for the facility and for the
+    mitigation text. pdfplumber returns those merged cells as
+    blank on every row but the first, so:
 
-        normalized = clean_text(header).lower()
+      * facility  : forward-filled from the row above
+      * mitigation: assigned to every row whose vertical position
+                    falls inside the merged cell's bounding box
+    """
 
-        for name in possible_names:
+    data = table.extract()
 
-            if name in normalized:
-                return index
+    if not data:
+        return []
 
-    return None
+    # Vertical extent of every row (from the contingency cell)
+    row_boxes = []
+    mitigation_spans = []
 
+    for i, row in enumerate(table.rows):
 
-def identify_columns(header_row):
+        cells = row.cells
 
-    headers = [
-        clean_text(value).lower()
-        for value in header_row
-    ]
-
-    columns = {
-        "facility": find_column(
-            headers,
-            ["facility name", "facility", "monitored element", "element"]
-        ),
-
-        "contingency": find_column(
-            headers,
-            ["contingency", "outage", "event"]
-        ),
-
-        "loading": find_column(
-            headers,
-            ["loading", "percent loading", "loading %", "percent"]
-        ),
-
-        "scenario": find_column(
-            headers,
-            ["scenario", "case name", "study case"]
-        ),
-
-        "mitigation": find_column(
-            headers,
-            ["mitigation", "recommended action", "solution"]
-        ),
-
-        "severity": find_column(
-            headers,
-            ["severity", "priority", "risk level"]
+        cont_box = (
+            cells[COL_CONTINGENCY]
+            if len(cells) > COL_CONTINGENCY
+            else None
         )
-    }
 
-    required_found = all(
-        columns[name] is not None
-        for name in ["facility", "contingency", "loading"]
-    )
+        row_boxes.append(cont_box)
 
-    if not required_found:
+        if len(cells) > COL_MITIGATION and cells[COL_MITIGATION]:
 
-        # Original demonstration mapping.
-        columns["facility"] = 0
-        columns["contingency"] = 1
-        columns["loading"] = 2
+            text = (
+                clean_cell(data[i][COL_MITIGATION])
+                if i < len(data) and len(data[i]) > COL_MITIGATION
+                else ""
+            )
 
-        return columns, False
+            if text:
+                box = cells[COL_MITIGATION]
+                mitigation_spans.append((box[1], box[3], text))
 
-    return columns, True
+    rows = []
 
+    for i, raw in enumerate(data):
 
-def get_cell(row, index):
+        if not raw or len(raw) < EXPECTED_COLS:
+            continue
 
-    if index is None or index >= len(row):
-        return ""
+        category = clean_text(raw[COL_CATEGORY]).upper()
 
-    return clean_text(row[index])
+        # Skips the header rows, notes and anything that is not a finding
+        if not CATEGORY_RE.match(category):
+            continue
+
+        facility = clean_cell(raw[COL_FACILITY])
+
+        inherited = False
+
+        if facility:
+            last_facility = facility
+        else:
+            facility = last_facility
+            inherited = True
+
+        # Mitigation text for this row
+        mitigation = clean_cell(raw[COL_MITIGATION])
+
+        if not mitigation and row_boxes[i] is not None:
+
+            y = mid_y(row_boxes[i])
+
+            for top, bottom, text in mitigation_spans:
+
+                if top - 1 <= y <= bottom + 1:
+                    mitigation = text
+                    break
+
+        rows.append({
+            "row_idx": i + 1,
+            "facility": facility,
+            "facility_inherited": inherited,
+            "contingency": clean_cell(raw[COL_CONTINGENCY]),
+            "category": category,
+            "category_desc": clean_cell(raw[COL_CATEGORY_DESC]),
+            "loadings": [
+                clean_cell(raw[FIRST_SCENARIO_COL + n])
+                for n in range(len(SCENARIOS))
+            ],
+            "mitigation": mitigation
+        })
+
+    return rows
 
 
 # ---------------------------------------------------------
 # MAIN INGESTION PIPELINE
 # ---------------------------------------------------------
 
-def ingest_sce_report(pdf_path, tpp_cycle, study_area):
+def ingest_sce_report(
+    pdf_path,
+    tpp_cycle,
+    study_area,
+    publication_date=DEFAULT_PUBLICATION_DATE
+):
 
     if not os.path.exists(pdf_path):
         raise FileNotFoundError(
@@ -217,6 +260,8 @@ def ingest_sce_report(pdf_path, tpp_cycle, study_area):
     inserted_count = 0
     skipped_count = 0
     review_count = 0
+    below_limit_count = 0
+    last_facility = ""
 
     try:
 
@@ -236,6 +281,7 @@ def ingest_sce_report(pdf_path, tpp_cycle, study_area):
 
             report = Report(
                 title=f"SCE {tpp_cycle} {study_area}",
+                publication_date=publication_date,
                 source_file=file_name,
                 tpp_cycle=tpp_cycle,
                 study_area=study_area
@@ -257,125 +303,40 @@ def ingest_sce_report(pdf_path, tpp_cycle, study_area):
 
                 page_num = page_idx + 1
 
-                tables = page.extract_tables()
+                # Only the thermal overload section has this layout.
+                # Voltage, stability and load-drop pages are skipped.
+                page_text = page.extract_text() or ""
+
+                if THERMAL_PAGE_MARKER not in page_text:
+                    continue
+
+                tables = page.find_tables()
 
                 if not tables:
                     continue
 
-                print(
-                    f"Processing page {page_num}: "
-                    f"{len(tables)} table(s)"
-                )
+                page_rows = 0
 
                 for table_idx, table in enumerate(tables):
 
-                    if not table or len(table) < 2:
-                        continue
+                    source_table = f"Table {table_idx + 1}"
 
-                    # First row is treated as the header.
-                    columns, header_detected = identify_columns(
-                        table[0]
-                    )
+                    # A table can start mid-facility when the previous
+                    # page ended with a merged facility cell, so the last
+                    # facility is carried across pages.
+                    rows = read_table_rows(table, last_facility)
 
-                    for row_idx, row in enumerate(table[1:], start=2):
+                    if rows:
+                        last_facility = rows[-1]["facility"]
 
-                        if not row:
-                            continue
+                    for item in rows:
 
-                        # ---------------------------------
-                        # Extract raw fields
-                        # ---------------------------------
+                        page_rows += 1
 
-                        raw_facility = get_cell(
-                            row, columns["facility"]
-                        )
-
-                        raw_contingency = get_cell(
-                            row, columns["contingency"]
-                        )
-
-                        raw_loading = get_cell(
-                            row, columns["loading"]
-                        )
-
-                        raw_scenario = get_cell(
-                            row, columns["scenario"]
-                        )
-
-                        raw_mitigation = get_cell(
-                            row, columns["mitigation"]
-                        )
-
-                        raw_severity = get_cell(
-                            row, columns["severity"]
-                        )
-
-                        # Skip empty rows
-                        if not raw_facility and not raw_contingency:
-                            continue
-
-                        # Skip repeated headers
-                        if raw_facility.lower() in (
-                            "facility",
-                            "facility name"
-                        ):
-                            continue
+                        facility_name = item["facility"] or "Unknown Facility"
 
                         # ---------------------------------
-                        # Normalize facility
-                        # ---------------------------------
-
-                        facility_name = canonicalize_facility(
-                            raw_facility
-                        )
-
-                        # ---------------------------------
-                        # Normalize loading
-                        # ---------------------------------
-
-                        parsed_value, status = clean_and_normalize_loading(
-                            raw_loading
-                        )
-
-                        # ---------------------------------
-                        # Extract contingency
-                        # ---------------------------------
-
-                        contingency_code = extract_contingency_code(
-                            raw_contingency
-                        )
-
-                        # ---------------------------------
-                        # Scenario
-                        # ---------------------------------
-
-                        if not raw_scenario:
-                            raw_scenario = "Unspecified scenario"
-
-                        scenario_year = extract_year(raw_scenario)
-
-                        # ---------------------------------
-                        # Confidence and review
-                        # ---------------------------------
-
-                        confidence, requires_review = get_confidence(
-                            raw_facility,
-                            raw_contingency,
-                            raw_loading,
-                            header_detected
-                        )
-
-                        if contingency_code == "UNKNOWN":
-                            requires_review = True
-
-                        if status in ("UNKNOWN", "MISSING"):
-                            requires_review = True
-
-                        if status == "NOT_CONVERGED":
-                            requires_review = True
-
-                        # ---------------------------------
-                        # Create or retrieve facility
+                        # Facility / contingency / mitigation
                         # ---------------------------------
 
                         facility = get_or_create(
@@ -384,125 +345,152 @@ def ingest_sce_report(pdf_path, tpp_cycle, study_area):
                             canonical_name=facility_name
                         )
 
-                        # ---------------------------------
-                        # Create or retrieve contingency
-                        # ---------------------------------
-
+                        # Contingency rows are keyed by category code
+                        # (P1, P6, P2/P4 ...). The full contingency text
+                        # is stored on each finding.
                         contingency = get_or_create(
                             session,
                             Contingency,
-                            contingency_code=contingency_code,
+                            contingency_code=item["category"],
                             defaults={
-                                "category": contingency_code,
-                                "description": raw_contingency
+                                "category": item["category"],
+                                "description": item["category_desc"]
                             }
                         )
-
-                        # ---------------------------------
-                        # Create or retrieve scenario
-                        # ---------------------------------
-
-                        scenario = get_or_create(
-                            session,
-                            Scenario,
-                            scenario_name=raw_scenario,
-                            defaults={
-                                "study_year": scenario_year
-                            }
-                        )
-
-                        # ---------------------------------
-                        # Create mitigation if available
-                        # ---------------------------------
 
                         mitigation = None
 
-                        if raw_mitigation:
+                        if item["mitigation"]:
 
                             mitigation = get_or_create(
                                 session,
                                 Mitigation,
-                                mitigation_text=raw_mitigation
+                                mitigation_text=item["mitigation"]
                             )
 
                         # ---------------------------------
-                        # Prevent duplicate findings
+                        # One finding per scenario overload
                         # ---------------------------------
 
-                        source_table = f"Table {table_idx + 1}"
+                        for n, scenario_name in enumerate(SCENARIOS):
 
-                        existing = session.query(Finding).filter_by(
-                            report_id=report.id,
-                            facility_id=facility.id,
-                            contingency_id=contingency.id,
-                            scenario_id=scenario.id,
-                            raw_value=raw_loading,
-                            source_page=page_num,
-                            source_table=source_table,
-                            source_row=row_idx
-                        ).first()
+                            raw_loading = item["loadings"][n]
 
-                        if existing:
-                            skipped_count += 1
-                            continue
+                            parsed_value, status = (
+                                clean_and_normalize_loading(raw_loading)
+                            )
 
-                        # ---------------------------------
-                        # Create finding
-                        # ---------------------------------
+                            # "< 100" means no overload in this scenario
+                            if status in ("BELOW_LIMIT", "MISSING"):
+                                below_limit_count += 1
+                                continue
 
-                        finding = Finding(
-                            report_id=report.id,
-                            facility_id=facility.id,
-                            contingency_id=contingency.id,
-                            scenario_id=scenario.id,
+                            scenario = get_or_create(
+                                session,
+                                Scenario,
+                                scenario_name=scenario_name,
+                                defaults={
+                                    "study_year": extract_year(
+                                        scenario_name
+                                    )
+                                }
+                            )
 
-                            mitigation_id=(
-                                mitigation.id if mitigation else None
-                            ),
+                            existing = session.query(Finding).filter_by(
+                                report_id=report.id,
+                                facility_id=facility.id,
+                                contingency_id=contingency.id,
+                                scenario_id=scenario.id,
+                                raw_value=raw_loading,
+                                source_page=page_num,
+                                source_table=source_table,
+                                source_row=item["row_idx"]
+                            ).first()
 
-                            facility_name_raw=raw_facility,
+                            if existing:
+                                skipped_count += 1
+                                continue
 
-                            contingency_description_raw=raw_contingency,
+                            # -----------------------------
+                            # Confidence and review
+                            # -----------------------------
 
-                            raw_value=raw_loading,
+                            confidence = 0.95
 
-                            parsed_value=parsed_value,
+                            if item["facility_inherited"]:
+                                confidence -= 0.05
 
-                            status_flag=status,
+                            if not item["contingency"]:
+                                confidence -= 0.20
 
-                            confidence_score=confidence,
+                            requires_review = False
 
-                            requires_review=requires_review,
+                            if status in ("NOT_CONVERGED", "UNKNOWN"):
+                                confidence -= 0.25
+                                requires_review = True
 
-                            severity=raw_severity or None,
+                            if not item["contingency"]:
+                                requires_review = True
 
-                            source_page=page_num,
+                            finding = Finding(
+                                report_id=report.id,
+                                facility_id=facility.id,
+                                contingency_id=contingency.id,
+                                scenario_id=scenario.id,
 
-                            source_table=source_table,
+                                mitigation_id=(
+                                    mitigation.id if mitigation else None
+                                ),
 
-                            source_row=row_idx
-                        )
+                                facility_name_raw=facility_name,
 
-                        session.add(finding)
-                        session.flush()
+                                contingency_description_raw=(
+                                    item["contingency"]
+                                ),
 
-                        # ---------------------------------
-                        # Save source evidence
-                        # ---------------------------------
+                                raw_value=raw_loading,
 
-                        evidence = Evidence(
-                            finding_id=finding.id,
-                            source_document=file_name,
-                            page_number=page_num,
-                            table_reference=source_table
-                        )
+                                parsed_value=parsed_value,
 
-                        session.add(evidence)
+                                status_flag=status,
 
-                        inserted_count += 1
+                                confidence_score=max(confidence, 0.0),
 
-                        if requires_review:
-                            review_count += 1
+                                requires_review=requires_review,
+
+                                # The report does not publish severity
+                                severity=None,
+
+                                source_page=page_num,
+
+                                source_table=source_table,
+
+                                source_row=item["row_idx"]
+                            )
+
+                            session.add(finding)
+                            session.flush()
+
+                            # -----------------------------
+                            # Save source evidence
+                            # -----------------------------
+
+                            session.add(Evidence(
+                                finding_id=finding.id,
+                                source_document=file_name,
+                                page_number=page_num,
+                                table_reference=source_table
+                            ))
+
+                            inserted_count += 1
+
+                            if requires_review:
+                                review_count += 1
+
+                print(
+                    f"Processing page {page_num}: "
+                    f"{page_rows} contingency row(s)"
+                )
 
         # ---------------------------------------------
         # Commit everything
@@ -517,6 +505,7 @@ def ingest_sce_report(pdf_path, tpp_cycle, study_area):
         print(f"Inserted findings: {inserted_count}")
         print(f"Skipped duplicates: {skipped_count}")
         print(f"Requires review: {review_count}")
+        print(f"'< 100' cells not stored: {below_limit_count}")
 
         print("--------------------------------\n")
 
@@ -554,6 +543,7 @@ def query_database():
 
             print(
                 f"Facility: {finding.facility.canonical_name} | "
+                f"Scenario: {finding.scenario.scenario_name} | "
                 f"Loading: {finding.raw_value} | "
                 f"Page: {finding.source_page}"
             )
@@ -562,12 +552,13 @@ def query_database():
 
         findings = session.query(Finding).filter(
             Finding.parsed_value > 120
-        ).all()
+        ).order_by(Finding.parsed_value.desc()).limit(25).all()
 
         for finding in findings:
 
             print(
                 f"Facility: {finding.facility.canonical_name} | "
+                f"Scenario: {finding.scenario.scenario_name} | "
                 f"Loading: {finding.parsed_value}% | "
                 f"Page: {finding.source_page}"
             )

@@ -1,7 +1,6 @@
 import os
 import sys
 
-# Locate Team 2 folder
 PROJECT_DIR = os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))
 )
@@ -59,6 +58,11 @@ REQUIRED = [
     "mitigation",
     "source_page"
 ]
+
+# The pipeline stores a contingency category (P1, P6, P2/P4 ...) in
+# "contingency" and the full contingency text in
+# "contingency_description". Pairs are grouped on the full text so that
+# different P6 events on the same facility are not merged.
 
 
 # ---------------------------------------------------------
@@ -238,6 +242,17 @@ DEMO = pd.DataFrame([
 
 
 # ---------------------------------------------------------
+# HELPERS
+# ---------------------------------------------------------
+
+def shorten(text, limit):
+
+    text = str(text)
+
+    return text if len(text) <= limit else text[:limit - 3] + "..."
+
+
+# ---------------------------------------------------------
 # DATA SOURCE SELECTION
 # ---------------------------------------------------------
 
@@ -384,6 +399,17 @@ else:
     )
 
 
+# Full contingency text (falls back to the category / code)
+if "contingency_description" not in df.columns:
+
+    df["contingency_description"] = df["contingency"]
+
+df["contingency_description"] = (
+    df["contingency_description"]
+    .fillna(df["contingency"])
+    .astype(str)
+)
+
 # Clean text columns.
 for col in [
     "report",
@@ -458,6 +484,16 @@ with st.sidebar:
         default=facilities
     )
 
+    categories = sorted(
+        df["contingency"].unique()
+    )
+
+    chosen_categories = st.multiselect(
+        "Contingency category",
+        categories,
+        default=categories
+    )
+
     severity_vals = sorted(
         df["severity"].unique()
     )
@@ -470,9 +506,13 @@ with st.sidebar:
 
     threshold = st.slider(
         "Overload threshold (%)",
-        min_value=80,
-        max_value=120,
-        value=100
+        min_value=100,
+        max_value=150,
+        value=100,
+        help=(
+            "Only loadings at or above 100% are stored, because the "
+            "report prints '< 100' for everything below that."
+        )
     )
 
 
@@ -485,10 +525,12 @@ view = df[
     &
     df["facility"].isin(chosen_facilities)
     &
+    df["contingency"].isin(chosen_categories)
+    &
     df["severity"].isin(chosen_severity)
 ].copy()
 
-view["overload"] = view["loading_numeric"].gt(
+view["overload"] = view["loading_numeric"].ge(
     threshold
 )
 
@@ -523,7 +565,7 @@ m1.metric(
 )
 
 m2.metric(
-    f"Above {threshold}%",
+    f"At or above {threshold}%",
     f"{int(view['overload'].sum()):,}"
 )
 
@@ -544,8 +586,17 @@ m4.metric(
 # RECURRENCE CALCULATIONS
 # ---------------------------------------------------------
 
+# Scenarios in which each facility/contingency pair is at or above
+# the threshold (the report publishes one loading per scenario).
+overloaded_scenarios = (
+    view[view["overload"]]
+    .groupby(["facility", "contingency_description"])["scenario"]
+    .nunique()
+    .rename("scenarios_overloaded")
+)
+
 recurrence = view.groupby(
-    ["facility", "contingency"],
+    ["facility", "contingency", "contingency_description"],
     dropna=False
 ).agg(
 
@@ -583,6 +634,15 @@ recurrence = view.groupby(
 
 ).reset_index()
 
+recurrence = recurrence.merge(
+    overloaded_scenarios.reset_index(),
+    on=["facility", "contingency_description"],
+    how="left"
+)
+
+recurrence["scenarios_overloaded"] = (
+    recurrence["scenarios_overloaded"].fillna(0).astype(int)
+)
 
 # Screening metric, not an engineering risk score.
 recurrence["persistence_score"] = (
@@ -594,7 +654,19 @@ recurrence["persistence_score"] = (
         .clip(lower=0) / 100
     )
     *
-    (1 + recurrence["high_severity"])
+    (
+        1
+        + recurrence["high_severity"]
+        + recurrence["scenarios_overloaded"]
+    )
+)
+
+recurrence["label"] = (
+    recurrence["facility"].apply(lambda t: shorten(t, 30))
+    + " | "
+    + recurrence["contingency_description"].apply(
+        lambda t: shorten(t, 45)
+    )
 )
 
 recurrence = recurrence.sort_values(
@@ -626,39 +698,57 @@ with tab_overview:
     left, right = st.columns(2)
 
     with left:
+
         chart_df = view.dropna(subset=["loading_numeric"]).copy()
+
         if chart_df.empty:
+
             st.info("No numerical loading values available.")
+
         else:
-            # Shorten axis labels for readability; full names remain on hover and in tables.
-            facility_peaks = chart_df.groupby("facility")["loading_numeric"].max().sort_values(ascending=False)
-            visible_facilities = facility_peaks.head(12).index
-            chart_df = chart_df[chart_df["facility"].isin(visible_facilities)].copy()
-            chart_df["facility_label"] = chart_df["facility"].apply(
-                lambda name: name if len(name) <= 42 else name[:39] + "..."
+
+            # Peak loading per facility and report
+            peaks = (
+                chart_df
+                .groupby(["facility", "report"], as_index=False)
+                ["loading_numeric"]
+                .max()
             )
+
+            top_facilities = (
+                peaks.groupby("facility")["loading_numeric"]
+                .max()
+                .sort_values(ascending=False)
+                .head(12)
+                .index
+            )
+
+            peaks = peaks[peaks["facility"].isin(top_facilities)].copy()
+
+            peaks["facility_label"] = peaks["facility"].apply(
+                lambda name: shorten(name, 42)
+            )
+
             fig = px.bar(
-                chart_df,
+                peaks,
                 x="loading_numeric",
                 y="facility_label",
                 color="report",
                 hover_data={
                     "facility": True,
-                    "contingency": True,
-                    "scenario": True,
-                    "severity": True,
                     "loading_numeric": ":.1f",
                     "facility_label": False
                 },
                 barmode="group",
                 orientation="h",
                 labels={
-                    "loading_numeric": "Loading (%)",
+                    "loading_numeric": "Peak Loading (%)",
                     "facility_label": "Facility",
                     "report": "Report"
                 },
-                title="Highest Facility Loadings by Report"
+                title="Highest Peak Loadings by Facility"
             )
+
             fig.add_vline(
                 x=threshold,
                 line_dash="dash",
@@ -666,43 +756,133 @@ with tab_overview:
                 annotation_text=f"Threshold {threshold}%",
                 annotation_position="top"
             )
+
             fig.update_layout(
-                height=max(380, 38 * chart_df["facility"].nunique()),
+                height=max(380, 38 * peaks["facility"].nunique()),
                 margin=dict(l=20, r=20, t=75, b=35),
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
-                yaxis=dict(title=None, automargin=True, tickfont=dict(size=10)),
-                xaxis=dict(title="Loading (%)", rangemode="tozero")
+                legend=dict(
+                    orientation="h",
+                    yanchor="bottom",
+                    y=1.02,
+                    xanchor="left",
+                    x=0
+                ),
+                yaxis=dict(
+                    title=None,
+                    automargin=True,
+                    tickfont=dict(size=10),
+                    categoryorder="total ascending"
+                ),
+                xaxis=dict(title="Peak Loading (%)", rangemode="tozero")
             )
-            if len(facility_peaks) > 12:
-                st.caption("Showing the 12 facilities with the highest numeric loading; full results remain in the Findings tab.")
+
+            if chart_df["facility"].nunique() > 12:
+
+                st.caption(
+                    "Showing the 12 facilities with the highest peak "
+                    "loading; full results remain in the Findings tab."
+                )
+
             st.plotly_chart(fig, use_container_width=True)
 
     with right:
-        counts = view.groupby("severity", as_index=False).size().rename(columns={"size": "findings"})
+
+        # The report does not publish severity. When nothing is
+        # classified, break findings down by contingency category.
+        if view["severity"].nunique() == 1 and (
+            view["severity"].iloc[0] == "Unclassified"
+        ):
+            pie_col = "contingency"
+            pie_title = "Findings by Contingency Category"
+        else:
+            pie_col = "severity"
+            pie_title = "Findings by Severity"
+
+        counts = (
+            view.groupby(pie_col, as_index=False)
+            .size()
+            .rename(columns={"size": "findings"})
+        )
+
         fig = px.pie(
             counts,
-            names="severity",
+            names=pie_col,
             values="findings",
-            title="Findings by Severity",
+            title=pie_title,
             hole=0.35
         )
+
         fig.update_layout(
             height=420,
             margin=dict(l=15, r=15, t=60, b=25),
-            legend=dict(orientation="h", yanchor="top", y=-0.05, xanchor="center", x=0.5)
+            legend=dict(
+                orientation="h",
+                yanchor="top",
+                y=-0.05,
+                xanchor="center",
+                x=0.5
+            )
         )
+
         st.plotly_chart(fig, use_container_width=True)
 
+    # -----------------------------------------------------
+    # Findings by scenario
+    # -----------------------------------------------------
+
+    st.subheader("Overloads by Scenario")
+
+    scenario_counts = (
+        view[view["overload"]]
+        .groupby(["scenario", "report"], as_index=False)
+        .size()
+        .rename(columns={"size": "findings"})
+    )
+
+    if scenario_counts.empty:
+
+        st.info("No findings at or above the threshold.")
+
+    else:
+
+        fig = px.bar(
+            scenario_counts,
+            x="scenario",
+            y="findings",
+            color="report",
+            barmode="group",
+            labels={
+                "scenario": "Scenario",
+                "findings": "Findings at or above threshold"
+            },
+            title=f"Findings at or above {threshold}% by Scenario"
+        )
+
+        fig.update_layout(
+            height=420,
+            margin=dict(l=20, r=20, t=60, b=30),
+            xaxis=dict(tickangle=-35)
+        )
+
+        st.plotly_chart(fig, use_container_width=True)
+
+    # -----------------------------------------------------
+    # Mitigations
+    # -----------------------------------------------------
+
     st.subheader("Most Common Mitigation Descriptions")
+
     mitigation_counts = (
         view.groupby("mitigation", as_index=False)
         .size()
         .sort_values("size", ascending=False)
         .head(10)
     )
-    mitigation_counts["mitigation_label"] = mitigation_counts["mitigation"].apply(
-        lambda text: text if len(text) <= 58 else text[:55] + "..."
-    )
+
+    mitigation_counts["mitigation_label"] = mitigation_counts[
+        "mitigation"
+    ].apply(lambda text: shorten(text, 58))
+
     fig = px.bar(
         mitigation_counts.sort_values("size"),
         x="size",
@@ -716,13 +896,16 @@ with tab_overview:
         labels={"size": "Findings", "mitigation_label": "Mitigation"},
         title="Most Common Mitigation Descriptions"
     )
+
     fig.update_layout(
         height=max(360, 48 * len(mitigation_counts)),
         margin=dict(l=20, r=20, t=60, b=30),
         yaxis=dict(title=None, automargin=True, tickfont=dict(size=10)),
         xaxis=dict(title="Findings", rangemode="tozero")
     )
+
     st.plotly_chart(fig, use_container_width=True)
+
 
 # =========================================================
 # TAB 2: FINDINGS
@@ -737,6 +920,7 @@ with tab_findings:
         "report_date",
         "facility",
         "contingency",
+        "contingency_description",
         "scenario",
         "loading_raw",
         "loading_status",
@@ -748,7 +932,7 @@ with tab_findings:
 
     st.dataframe(
         view[cols].sort_values(
-            ["report", "facility", "contingency"]
+            ["report", "facility", "contingency_description"]
         ),
         use_container_width=True,
         hide_index=True
@@ -756,33 +940,32 @@ with tab_findings:
 
     st.subheader("Findings Requiring Human Review")
 
-    if "requires_review" in view.columns:
+    review_df = view[
+        view["requires_review"].fillna(False).astype(bool)
+    ]
 
-        review_df = view[
-            view["requires_review"].fillna(False).astype(bool)
+    if review_df.empty:
+
+        st.success(
+            "No findings are currently flagged for review."
+        )
+
+    else:
+
+        review_cols = [
+            "facility",
+            "contingency_description",
+            "scenario",
+            "loading_raw",
+            "source_page",
+            "confidence_score"
         ]
 
-        if review_df.empty:
-
-            st.success(
-                "No findings are currently flagged for review."
-            )
-
-        else:
-
-            review_cols = [
-                "facility",
-                "contingency",
-                "loading_raw",
-                "source_page",
-                "confidence_score"
-            ]
-
-            st.dataframe(
-                review_df[review_cols],
-                use_container_width=True,
-                hide_index=True
-            )
+        st.dataframe(
+            review_df[review_cols],
+            use_container_width=True,
+            hide_index=True
+        )
 
     st.download_button(
         "Download Filtered Findings CSV",
@@ -802,13 +985,14 @@ with tab_recurrence:
 
     st.caption(
         "Persistence ranks facility/contingency pairs using "
-        "report recurrence, peak loading, and high/critical "
-        "severity counts. This is a screening metric, "
+        "report recurrence, peak loading, the number of scenarios "
+        "at or above the threshold, and high/critical severity "
+        "counts. This is a screening metric, "
         "not an engineering risk score."
     )
 
     st.dataframe(
-        recurrence,
+        recurrence.drop(columns=["label"]),
         use_container_width=True,
         hide_index=True
     )
@@ -820,15 +1004,27 @@ with tab_recurrence:
     fig = px.bar(
         chart_recurrence,
         x="persistence_score",
-        y="facility",
-        color="recurrence_reports",
+        y="label",
+        color="scenarios_overloaded",
         orientation="h",
         hover_data=[
-            "contingency",
+            "facility",
+            "contingency_description",
             "peak_loading",
+            "scenarios_overloaded",
             "occurrences"
         ],
+        labels={
+            "label": "Facility | Contingency",
+            "persistence_score": "Persistence Score",
+            "scenarios_overloaded": "Scenarios overloaded"
+        },
         title="Highest Persistence Scores"
+    )
+
+    fig.update_layout(
+        height=max(420, 34 * len(chart_recurrence)),
+        yaxis=dict(title=None, automargin=True, tickfont=dict(size=10))
     )
 
     st.plotly_chart(
@@ -849,71 +1045,115 @@ with tab_compare:
         view["scenario"].unique()
     )
 
-    base = st.selectbox(
-        "Baseline Scenario",
-        scenarios,
-        key="base"
-    )
+    if len(scenarios) < 2:
 
-    sensitivity = st.selectbox(
-        "Sensitivity Scenario",
-        scenarios,
-        index=min(1, len(scenarios) - 1),
-        key="sens"
-    )
-
-    paired = view[
-        view["scenario"].isin(
-            [base, sensitivity]
-        )
-    ].pivot_table(
-        index=["facility", "contingency"],
-        columns="scenario",
-        values="loading_numeric",
-        aggfunc="max"
-    ).reset_index()
-
-    if base in paired.columns and sensitivity in paired.columns:
-
-        paired["change_pct_points"] = (
-            paired[sensitivity] - paired[base]
-        )
-
-        st.dataframe(
-            paired,
-            use_container_width=True,
-            hide_index=True
-        )
-
-        chart_paired = paired.dropna(
-            subset=["change_pct_points"]
-        )
-
-        if not chart_paired.empty:
-
-            fig = px.bar(
-                chart_paired,
-                x="facility",
-                y="change_pct_points",
-                color="change_pct_points",
-                title=f"Change: {sensitivity} minus {base}",
-                labels={
-                    "change_pct_points":
-                        "Loading Change (Percentage Points)"
-                }
-            )
-
-            st.plotly_chart(
-                fig,
-                use_container_width=True
-            )
+        st.info("At least two scenarios are needed for a comparison.")
 
     else:
 
-        st.info(
-            "Both scenarios need numerical readings "
-            "for a paired comparison."
+        default_base = next(
+            (s for s in scenarios if s.startswith("B1")),
+            scenarios[0]
         )
+
+        default_sens = next(
+            (s for s in scenarios if s.startswith("S2")),
+            scenarios[1]
+        )
+
+        base = st.selectbox(
+            "Baseline Scenario",
+            scenarios,
+            index=scenarios.index(default_base),
+            key="base"
+        )
+
+        sensitivity = st.selectbox(
+            "Sensitivity Scenario",
+            scenarios,
+            index=scenarios.index(default_sens),
+            key="sens"
+        )
+
+        st.caption(
+            "Only loadings at or above 100% are stored. A blank cell "
+            "means the report printed '< 100' for that scenario, or "
+            "the case did not converge."
+        )
+
+        paired = view[
+            view["scenario"].isin(
+                [base, sensitivity]
+            )
+        ].pivot_table(
+            index=["facility", "contingency_description"],
+            columns="scenario",
+            values="loading_numeric",
+            aggfunc="max"
+        ).reset_index()
+
+        if base in paired.columns and sensitivity in paired.columns:
+
+            paired["change_pct_points"] = (
+                paired[sensitivity] - paired[base]
+            )
+
+            st.dataframe(
+                paired,
+                use_container_width=True,
+                hide_index=True
+            )
+
+            chart_paired = paired.dropna(
+                subset=["change_pct_points"]
+            ).copy()
+
+            if chart_paired.empty:
+
+                st.info(
+                    "No facility/contingency pair has a stored loading "
+                    "in both scenarios."
+                )
+
+            else:
+
+                chart_paired["label"] = (
+                    chart_paired["facility"].apply(
+                        lambda t: shorten(t, 30)
+                    )
+                    + " | "
+                    + chart_paired["contingency_description"].apply(
+                        lambda t: shorten(t, 40)
+                    )
+                )
+
+                fig = px.bar(
+                    chart_paired,
+                    x="label",
+                    y="change_pct_points",
+                    color="change_pct_points",
+                    hover_data=["facility", "contingency_description"],
+                    title=f"Change: {sensitivity} minus {base}",
+                    labels={
+                        "label": "Facility | Contingency",
+                        "change_pct_points":
+                            "Loading Change (Percentage Points)"
+                    }
+                )
+
+                fig.update_layout(xaxis=dict(tickangle=-45))
+
+                st.plotly_chart(
+                    fig,
+                    use_container_width=True
+                )
+
+        else:
+
+            st.info(
+                "Both scenarios need numerical readings "
+                "for a paired comparison."
+            )
 
     # ---------------------------------------------
     # Cross-report comparison
@@ -922,7 +1162,7 @@ with tab_compare:
     st.subheader("Cross-Report Comparison")
 
     cross = view.pivot_table(
-        index=["facility", "contingency"],
+        index=["facility", "contingency_description"],
         columns="report",
         values="loading_numeric",
         aggfunc="max"
@@ -953,4 +1193,3 @@ st.caption(
     "source page, and table references. Verify extracted "
     "values against the original PDF before engineering use."
 )
-
