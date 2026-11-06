@@ -1,30 +1,28 @@
+import hashlib
 import os
 import sys
+import tempfile
 
-# Locate Team 2 folder
-PROJECT_DIR = os.path.dirname(
-    os.path.dirname(os.path.abspath(__file__))
-)
-
-TEAM2_DIR = os.path.join(
-    PROJECT_DIR,
-    "Team 2 - Database"
-)
+# Locate the Team 1 and Team 2 folders beside this dashboard.
+PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+TEAM2_DIR = os.path.join(PROJECT_DIR, "Team 2 - Database")
+TEAM1_DIR = os.path.join(PROJECT_DIR, "Team 1 - PDF Ingestion")
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
 
 sys.path.insert(0, TEAM2_DIR)
+sys.path.insert(0, TEAM1_DIR)
 
 # Standard imports
 import pandas as pd
 import numpy as np
 import plotly.express as px
 import streamlit as st
-
 from sqlalchemy import create_engine
 
-# Import Team 2 modules
+# Import shared database, normalization, and Team 1 PDF ingestion functions.
 from database import DB_URL
 from normalizer import clean_and_normalize_loading
-
+from pipeline import ingest_sce_report
 
 # ---------------------------------------------------------
 # PAGE CONFIGURATION
@@ -249,7 +247,7 @@ with st.sidebar:
         "Select data source",
         [
             "Shared Database",
-            "Upload CSV",
+            "PDF Ingestion Upload",
             "Illustrative Demo"
         ]
     )
@@ -258,63 +256,94 @@ with st.sidebar:
 if data_source == "Shared Database":
 
     try:
-
         raw = load_database_findings()
-
         source_label = "Shared SQLite Database"
-
         if raw.empty:
-
             st.warning(
                 "The database contains no findings. "
-                "Run Team 1's pipeline.py first."
+                "Use PDF Ingestion Upload or run Team 1's pipeline.py first."
             )
-
             st.stop()
-
     except Exception as exc:
-
-        st.error(
-            f"Could not connect to database: {exc}"
-        )
-
+        st.error(f"Could not connect to database: {exc}")
         st.stop()
 
 
-elif data_source == "Upload CSV":
+elif data_source == "PDF Ingestion Upload":
 
-    uploaded = st.sidebar.file_uploader(
-        "Upload normalized findings CSV",
-        type=["csv"]
-    )
+    with st.sidebar:
+        uploaded_pdf = st.file_uploader(
+            "Choose a planning report PDF",
+            type=["pdf"],
+            help="The Team 1 pipeline extracts findings and saves them to the shared Team 2 database."
+        )
+        tpp_cycle = st.text_input("TPP cycle", value="2026-2027")
+        study_area = st.text_input("Study area", value="SCE Main")
+        ingest_clicked = st.button("Ingest PDF", type="primary")
 
-    if uploaded is None:
+    if uploaded_pdf is None:
+        st.info("Upload a PDF, enter its TPP cycle and study area, then click Ingest PDF.")
+        st.stop()
 
-        st.info("Upload a CSV file to continue.")
+    if not tpp_cycle.strip() or not study_area.strip():
+        st.warning("Enter both the TPP cycle and study area before ingestion.")
+        st.stop()
 
+    upload_key = hashlib.sha256(
+        uploaded_pdf.getvalue()
+        + uploaded_pdf.name.encode("utf-8")
+        + tpp_cycle.strip().encode("utf-8")
+        + study_area.strip().encode("utf-8")
+    ).hexdigest()
+
+    if ingest_clicked:
+        try:
+            # Keep the temporary PDF inside this Team 3 folder and delete it afterward.
+            safe_name = os.path.basename(uploaded_pdf.name.replace("\\", "/"))
+            if not safe_name.lower().endswith(".pdf"):
+                st.error("Please choose a PDF file.")
+                st.stop()
+
+            with st.spinner("Extracting the PDF and saving findings to the shared database..."):
+                with tempfile.TemporaryDirectory(
+                    prefix=".team3_pdf_upload_",
+                    dir=APP_DIR
+                ) as upload_dir:
+                    pdf_path = os.path.join(upload_dir, safe_name)
+                    with open(pdf_path, "wb") as pdf_file:
+                        pdf_file.write(uploaded_pdf.getvalue())
+                    ingest_sce_report(
+                        pdf_path,
+                        tpp_cycle=tpp_cycle.strip(),
+                        study_area=study_area.strip()
+                    )
+
+            st.session_state["team3_last_ingested_pdf"] = upload_key
+            st.success("PDF ingestion completed. Findings are loaded from the shared database below.")
+        except Exception as exc:
+            st.error(f"PDF ingestion failed: {exc}")
+            st.stop()
+
+    elif st.session_state.get("team3_last_ingested_pdf") != upload_key:
+        st.info("Click **Ingest PDF** to extract this report into the shared database.")
         st.stop()
 
     try:
-
-        raw = pd.read_csv(uploaded)
-
-        source_label = uploaded.name
-
+        raw = load_database_findings()
+        source_label = "Shared database after PDF ingestion"
+        if raw.empty:
+            st.warning("The PDF was processed, but no findings were extracted.")
+            st.stop()
     except Exception as exc:
-
-        st.error(f"Could not read CSV: {exc}")
-
+        st.error(f"Could not load findings from the shared database: {exc}")
         st.stop()
 
 
 else:
 
     raw = DEMO.copy()
-
     source_label = "Illustrative sample data"
 
-
-# ---------------------------------------------------------
 # VALIDATE DATA
 # ---------------------------------------------------------
 
@@ -953,4 +982,6 @@ st.caption(
     "source page, and table references. Verify extracted "
     "values against the original PDF before engineering use."
 )
+
+
 

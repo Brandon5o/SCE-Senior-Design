@@ -1,13 +1,12 @@
 # Team 3 — SCE Transmission Planning Analytics Dashboard
 
-A Streamlit dashboard for reviewing transmission planning findings from the shared Team 2 database, with Team 1 extraction and source traceability. It includes filters, tables, charts, recurrence and persistence ranking, baseline/sensitivity comparisons, and cross-report comparisons.
+A Streamlit dashboard for reviewing transmission planning findings from the shared Team 2 database. It supports PDF ingestion through Team 1's extraction pipeline, as well as filters, findings tables, charts, recurrence ranking, and report comparisons.
 
-## Required downloads
+## Required downloads and folders
 
 - **Python 3.11 or newer** — install from [python.org/downloads](https://www.python.org/downloads/) and select **Add Python to PATH** during Windows setup.
-- **Dashboard packages** — installed from `requirements.txt` below: Streamlit, pandas, NumPy, Plotly, and SQLAlchemy. They will be installed in the `.venv` virtual environment inside this folder.
-
-The dashboard also reads the Team 2 SQLite database from the sibling `Team 2 - Database` folder. Keep the Team 2 folder and database in place alongside this folder. Team 1/Team 2 deliverables should provide report-backed findings; any demo data shown in the app is illustrative.
+- **Dashboard and PDF packages** — installed from `requirements.txt` below: Streamlit, pandas, NumPy, Plotly, SQLAlchemy, and pdfplumber. They are installed in the `.venv` virtual environment inside this folder.
+- Keep the sibling **`Team 1 - PDF Ingestion`** and **`Team 2 - Database`** folders alongside this folder. Team 3 calls Team 1's PDF pipeline and reads the shared Team 2 SQLite database.
 
 ## Install and run (Windows Command Prompt)
 
@@ -20,18 +19,15 @@ py -m venv .venv
 .venv\Scripts\python -m streamlit run app.py
 ```
 
-If `.venv` already exists, you can skip the first command. The last command starts the app and prints a local URL to open in your browser. Keep Command Prompt open while using the dashboard; press `Ctrl+C` there to stop it. If `py` is not recognized, use `python` instead.
+If `.venv` already exists, skip the first command. Open the local URL printed by Streamlit in your browser. Keep Command Prompt open while using the dashboard; press `Ctrl+C` there to stop it. If `py` is not recognized, use `python` instead.
 
-If the same `No module named 'sqlalchemy'` error appears after updating requirements, install it into this folder's environment with:
+## Ingest a planning report
 
-```bat
-.venv\Scripts\python -m pip install -r requirements.txt
-```
+1. In the sidebar, select **PDF Ingestion Upload**.
+2. Choose the report PDF and enter its TPP cycle and study area.
+3. Click **Ingest PDF**. Team 1 extracts the report tables and stores findings and source references in the shared Team 2 database.
+4. The dashboard loads the database findings so you can filter and compare them.
 
-## CSV input format
+The uploaded PDF is held temporarily in the Team 3 folder during processing and removed afterward. Team 1's pipeline handles duplicate findings when the same report is ingested again.
 
-If using CSV upload, provide one row per finding with these columns:
-
-`report, report_date, facility, contingency, scenario, loading_pct, severity, mitigation, source_page`
-
-The dashboard preserves raw loading values such as `119.0%`, `<100`, or `NotConv`, and calculates numeric comparisons when possible. Confirm source page references against the original report before relying on results.
+The **Illustrative Demo** source remains available for a quick UI preview; those sample values are not report findings.
