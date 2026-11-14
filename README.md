@@ -48,5 +48,20 @@ python "Team 1 - PDF Ingestion/pipeline.py"
 5. Start the dashboard:
 
 streamlit run "Team 3 - Analytics Dashboard/app.py"
+Or to run as python module python -m streamlit run "Team 3 - Analytics Dashboard/app.py"
 
 Open http://localhost:8501 in your browser to view the dashboard.
+
+# Testing
+
+Team 2 database normalization tests live in `Team 2 - Database/test_normalizer.py`. They use the Python standard library (`unittest`), so no extra test package is required.
+
+From the project directory:
+
+```
+python "Team 2 - Database/test_normalizer.py"
+```
+
+The loading cases start from the samples in `normalizer.py` (`119.0%`, `<100`, `< 100`, `< 80`, `NotConv`, `NatConv`, `95.5%`) and also cover `<100%` and a per-unit voltage (`1.05`). Each case checks the status flag. Every non-numeric case also checks that the parsed value is null, so bounds such as `<100` are not stored as an exact number.
+
+The same file checks a battery storage mitigation sentence and a PSLF-style bus pair (`24156 Lugo 500 24157 Eldorado 500 1 1`).

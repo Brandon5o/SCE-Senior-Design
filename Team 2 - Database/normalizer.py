@@ -10,43 +10,29 @@ DB_PATH = Path(__file__).resolve().parent / "power_system_reliability.db"
 # 1. LOADING & VALUE NORMALIZATION
 # ---------------------------------------------------------
 def clean_and_normalize_loading(raw_str):
-    """
-    Parses messy text inputs from reliability reports:
-    - Handles percentages ('119.0%')
-    - Handles inequality bounds ('< 100', '< 80') without inventing exact numbers
-    - Handles non-convergence flags ('NotConv', 'NatConv', etc.)
-    """
-    if raw_str is None or (not isinstance(raw_str, str) and pd.isna(raw_str)):
+    if pd.isna(raw_str):
         return None, "MISSING"
 
-    val_str = " ".join(str(raw_str).split())
+    val_str = str(raw_str).strip()
     if not val_str:
         return None, "MISSING"
 
-    non_conv_tokens = [
-        "notconv", "notcom", "natconv", "netconv",
-        "nalconv", "norconv", "notcon", "diverged",
-    ]
+    non_conv_tokens = ["notconv", "notcom", "natconv", "netconv", "nalconv", "norconv", "notcon", "diverged"]
     if any(token in val_str.lower() for token in non_conv_tokens):
         return None, "NOT_CONVERGED"
 
     if val_str.lower() == "stable":
         return 0.0, "NORMAL"
 
-    # Preserve inequality semantics: do not convert '<100' into an exact number
-    if re.match(r"^<\s*\d+(?:\.\d+)?", val_str):
-        return None, "BELOW_LIMIT"
+    ineq_match = re.match(r"^<\s*(\d+(?:\.\d+)?)", val_str)
+    if ineq_match:
+        bound = float(ineq_match.group(1))
+        return round(bound - 0.1, 1), "BELOW_LIMIT"
 
     if "<v<" in val_str.lower() or "<" in val_str:
         return None, "VOLTAGE_RANGE"
 
-    cleaned = (
-        val_str.replace("%", "")
-        .replace(":", ".")
-        .replace(",", ".")
-        .replace("$", "1")
-        .strip()
-    )
+    cleaned = val_str.replace("%", "").replace(":", ".").replace(",", ".").replace("$", "1").strip()
     try:
         clean_num = float(cleaned)
         if 0.4 <= clean_num <= 2.0:
@@ -63,8 +49,6 @@ def clean_and_normalize_loading(raw_str):
 def classify_severity(parsed_value, status_flag):
     if status_flag == "NOT_CONVERGED":
         return "Non-Converged / Diverged"
-    if status_flag == "BELOW_LIMIT":
-        return "Normal (<100%)"
     if status_flag in ("VOLTAGE_RANGE", "VOLTAGE_PU"):
         return "Voltage Study"
     if parsed_value is None:
@@ -86,26 +70,18 @@ def parse_facility_metadata(raw_facility_name, anonymize=False, facility_id=None
     if not raw_facility_name or "unknown" in raw_facility_name.lower():
         return "Unknown Facility", None, "Unassigned / System-Level"
     text = " ".join(str(raw_facility_name).split())
-
+    
     bus_pattern = re.match(
         r"^(\d+)\s+([A-Za-z0-9_.\s]+?)\s+(\d+(?:\.\d+)?)\s+(\d+)\s+([A-Za-z0-9_.\s]+?)\s+(\d+(?:\.\d+)?)\s+(\S+)\s+(\S+)$",
-        text,
+        text
     )
     if bus_pattern:
         _, sub1, kv1_str, _, sub2, kv2_str, ckt, _ = bus_pattern.groups()
         kv1, kv2 = float(kv1_str), float(kv2_str)
         primary_kv = max(kv1, kv2)
-        fac_type = (
-            "Transformer Bank"
-            if kv2 < 50.0 or "i" in sub2.lower()
-            else "Transmission Line"
-        )
+        fac_type = "Transformer Bank" if kv2 < 50.0 or "i" in sub2.lower() else "Transmission Line"
         if anonymize and facility_id is not None:
-            return (
-                f"Facility_{facility_id:03d} ({int(primary_kv)} kV {fac_type})",
-                primary_kv,
-                fac_type,
-            )
+            return f"Facility_{facility_id:03d} ({int(primary_kv)} kV {fac_type})", primary_kv, fac_type
         return text, primary_kv, fac_type
 
     sub_pattern = re.search(r"(\d+(?:\.\d+)?)\s*kV", text, re.IGNORECASE)
@@ -233,9 +209,6 @@ if __name__ == "__main__":
     for item in test_inputs:
         parsed, flag = clean_and_normalize_loading(item)
         sev = classify_severity(parsed, flag)
-        print(
-            f"Raw: {item:<8} -> Parsed: {str(parsed):<6} | "
-            f"Status: {flag:<14} | Severity: {sev}"
-        )
+        print(f"Raw: {item:<8} -> Parsed: {str(parsed):<6} | Status: {flag:<14} | Severity: {sev}")
     print("-" * 70)
     normalize_existing_database()
