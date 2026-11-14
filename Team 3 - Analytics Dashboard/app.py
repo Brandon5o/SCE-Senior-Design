@@ -75,6 +75,8 @@ def load_database_findings():
             r.title AS report,
             r.publication_date AS report_date,
 
+            r.study_area AS study_area,
+
             f.canonical_name AS facility,
 
             c.contingency_code AS contingency,
@@ -367,6 +369,10 @@ if missing:
 
 df = raw.copy()
 
+if "study_area" not in df.columns:
+    df["study_area"] = "Unknown"
+df["study_area"] = df["study_area"].fillna("Unknown").astype(str)
+
 df["report_date"] = pd.to_datetime(
     df["report_date"],
     errors="coerce"
@@ -416,6 +422,7 @@ else:
 # Clean text columns.
 for col in [
     "report",
+    "study_area",
     "facility",
     "contingency",
     "scenario",
@@ -487,6 +494,16 @@ with st.sidebar:
         default=facilities
     )
 
+    main_area_options = sorted(df["study_area"].dropna().unique()) or ["Unknown"]
+    main_area_default = next(
+        (idx for idx, area in enumerate(main_area_options) if "main" in area.lower()),
+        0
+    )
+    main_area = st.selectbox(
+        "Main area for summary",
+        main_area_options,
+        index=main_area_default
+    )
     severity_vals = sorted(
         df["severity"].unique()
     )
@@ -547,8 +564,8 @@ numeric = view["loading_numeric"].dropna()
 m1, m2, m3, m4 = st.columns(4)
 
 m1.metric(
-    "Total Findings",
-    f"{len(view):,}"
+    "Main Area Findings",
+    f"{int(view['study_area'].eq(main_area).sum()):,}"
 )
 
 m2.metric(
@@ -722,7 +739,56 @@ with tab_overview:
         )
         st.plotly_chart(fig, use_container_width=True)
 
-    st.subheader("Most Common Mitigation Descriptions")
+    area_counts = view.groupby("study_area", as_index=False).size().rename(columns={"size": "findings"})
+    area_counts = area_counts.sort_values("findings", ascending=False)
+    st.subheader("Findings by Study Area")
+    st.caption("Double-click an area bar to view its detailed findings.")
+    area_fig = px.bar(
+        area_counts,
+        x="findings",
+        y="study_area",
+        orientation="h",
+        custom_data=["study_area"],
+        labels={"findings": "Findings", "study_area": "Study Area"},
+        title="Total Findings by Study Area"
+    )
+    area_fig.update_layout(
+        height=max(260, 42 * len(area_counts)),
+        margin=dict(l=20, r=20, t=60, b=25),
+        yaxis=dict(title=None, automargin=True),
+        xaxis=dict(title="Findings", rangemode="tozero")
+    )
+    area_event = st.plotly_chart(
+        area_fig,
+        use_container_width=True,
+        key="study_area_findings_chart",
+        on_select="rerun",
+        selection_mode="points"
+    )
+    selected_points = area_event.selection.points
+    if selected_points:
+        selected_area = selected_points[-1].get("customdata", [None])[0]
+        if selected_area in set(view["study_area"]):
+            area_detail = view[view["study_area"] == selected_area].copy()
+            st.markdown(f"#### {selected_area} — Detailed View")
+            detail_a, detail_b, detail_c = st.columns(3)
+            detail_a.metric("Findings", f"{len(area_detail):,}")
+            area_facility_count = area_detail["facility"].nunique()
+            detail_b.metric("Facilities", f"{area_facility_count:,}")
+            area_peak = area_detail["loading_numeric"].max()
+            detail_c.metric("Peak Loading", f"{area_peak:.1f}%" if pd.notna(area_peak) else "N/A")
+            detail_cols = [
+                "report", "facility", "contingency", "scenario",
+                "loading_raw", "severity", "mitigation", "source_page"
+            ]
+            st.dataframe(
+                area_detail[detail_cols].sort_values(["report", "facility", "contingency"]),
+                use_container_width=True,
+                hide_index=True
+            )
+
+    st.subheader("Mitigation Options")
+    st.caption("Mitigation describes a proposed action to reduce a transmission constraint, such as a system upgrade or operating change.")
     mitigation_counts = (
         view.groupby("mitigation", as_index=False)
         .size()
@@ -730,7 +796,7 @@ with tab_overview:
         .head(10)
     )
     mitigation_counts["mitigation_label"] = mitigation_counts["mitigation"].apply(
-        lambda text: text if len(text) <= 58 else text[:55] + "..."
+        lambda text: text if len(text) <= 46 else text[:43] + "..."
     )
     fig = px.bar(
         mitigation_counts.sort_values("size"),
@@ -743,7 +809,7 @@ with tab_overview:
             "mitigation_label": False
         },
         labels={"size": "Findings", "mitigation_label": "Mitigation"},
-        title="Most Common Mitigation Descriptions"
+        title="Most Common Mitigation Options"
     )
     fig.update_layout(
         height=max(360, 48 * len(mitigation_counts)),
@@ -752,7 +818,6 @@ with tab_overview:
         xaxis=dict(title="Findings", rangemode="tozero")
     )
     st.plotly_chart(fig, use_container_width=True)
-
 # =========================================================
 # TAB 2: FINDINGS
 # =========================================================
@@ -815,7 +880,7 @@ with tab_findings:
 
     st.download_button(
         "Download Filtered Findings CSV",
-        view[cols].to_csv(index=False).encode("utf-8"),
+        view[["report", "report_date", "facility", "contingency", "scenario", "loading_raw", "loading_status", "severity", "mitigation", "source_page", "source_table"]].to_csv(index=False).encode("utf-8"),
         "filtered_findings.csv",
         "text/csv"
     )
@@ -982,6 +1047,11 @@ st.caption(
     "source page, and table references. Verify extracted "
     "values against the original PDF before engineering use."
 )
+
+
+
+
+
 
 
 
