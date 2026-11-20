@@ -723,7 +723,6 @@ with st.sidebar:
         default=facilities
     )
 
-<<<<<<< HEAD
     main_area_options = sorted(df["study_area"].dropna().unique()) or ["Unknown"]
     main_area_default = next(
         (idx for idx, area in enumerate(main_area_options) if "main" in area.lower()),
@@ -734,18 +733,13 @@ with st.sidebar:
         main_area_options,
         index=main_area_default
     )
-=======
-    categories = sorted(
-        df["contingency"].unique()
-    )
 
+    categories = sorted(df["contingency"].unique())
     chosen_categories = st.multiselect(
         "Contingency category",
         categories,
         default=categories
     )
-
->>>>>>> 92a0271beb0e551c4745a7076956cf9b0f046eb3
     severity_vals = sorted(
         df["severity"].unique()
     )
@@ -1078,11 +1072,10 @@ with tab_overview:
 
         st.plotly_chart(fig, use_container_width=True)
 
-<<<<<<< HEAD
     area_counts = view.groupby("study_area", as_index=False).size().rename(columns={"size": "findings"})
     area_counts = area_counts.sort_values("findings", ascending=False)
     st.subheader("Findings by Study Area")
-    st.caption("Double-click an area bar to view its detailed findings.")
+    st.caption("Select an area bar to view its detailed findings.")
     area_fig = px.bar(
         area_counts,
         x="findings",
@@ -1090,7 +1083,7 @@ with tab_overview:
         orientation="h",
         custom_data=["study_area"],
         labels={"findings": "Findings", "study_area": "Study Area"},
-        title="Total Findings by Study Area"
+        title="Findings by Study Area"
     )
     area_fig.update_layout(
         height=max(260, 42 * len(area_counts)),
@@ -1127,15 +1120,8 @@ with tab_overview:
                 hide_index=True
             )
 
-    st.subheader("Mitigation Options")
-    st.caption("Mitigation describes a proposed action to reduce a transmission constraint, such as a system upgrade or operating change.")
-=======
-    # -----------------------------------------------------
     # Findings by scenario
-    # -----------------------------------------------------
-
     st.subheader("Overloads by Scenario")
-
     scenario_counts = (
         view[view["overload"]]
         .groupby(["scenario", "report"], as_index=False)
@@ -1144,12 +1130,9 @@ with tab_overview:
     )
 
     if scenario_counts.empty:
-
         st.info("No findings at or above the threshold.")
-
     else:
-
-        fig = px.bar(
+        scenario_fig = px.bar(
             scenario_counts,
             x="scenario",
             y="findings",
@@ -1161,39 +1144,24 @@ with tab_overview:
             },
             title=f"Findings at or above {threshold}% by Scenario"
         )
-
-        fig.update_layout(
+        scenario_fig.update_layout(
             height=420,
             margin=dict(l=20, r=20, t=60, b=30),
             xaxis=dict(tickangle=-35)
         )
+        st.plotly_chart(scenario_fig, use_container_width=True)
 
-        st.plotly_chart(fig, use_container_width=True)
-
-    # -----------------------------------------------------
-    # Mitigations
-    # -----------------------------------------------------
-
-    st.subheader("Most Common Mitigation Descriptions")
-
->>>>>>> 92a0271beb0e551c4745a7076956cf9b0f046eb3
+    st.subheader("Mitigation Options")
+    st.caption("Mitigation summarizes a proposed action to reduce a transmission constraint, such as an upgrade or operating change.")
     mitigation_counts = (
         view.groupby("mitigation", as_index=False)
         .size()
         .sort_values("size", ascending=False)
         .head(10)
     )
-<<<<<<< HEAD
     mitigation_counts["mitigation_label"] = mitigation_counts["mitigation"].apply(
-        lambda text: text if len(text) <= 46 else text[:43] + "..."
+        lambda text: shorten(text, 46)
     )
-=======
-
-    mitigation_counts["mitigation_label"] = mitigation_counts[
-        "mitigation"
-    ].apply(lambda text: shorten(text, 58))
-
->>>>>>> 92a0271beb0e551c4745a7076956cf9b0f046eb3
     fig = px.bar(
         mitigation_counts.sort_values("size"),
         x="size",
@@ -1216,11 +1184,6 @@ with tab_overview:
     )
 
     st.plotly_chart(fig, use_container_width=True)
-<<<<<<< HEAD
-=======
-
-
->>>>>>> 92a0271beb0e551c4745a7076956cf9b0f046eb3
 # =========================================================
 # TAB 2: FINDINGS
 # =========================================================
@@ -1431,31 +1394,76 @@ with tab_compare:
 
             else:
 
+                # Keep the full paired table above, but chart only the 15
+                # largest changes so long labels remain readable.
+                chart_paired["change_direction"] = np.where(
+                    chart_paired["change_pct_points"] >= 0,
+                    "Increase",
+                    "Decrease"
+                )
+                chart_paired = chart_paired.loc[
+                    chart_paired["change_pct_points"].abs()
+                    .nlargest(15).index
+                ].copy()
+                chart_paired = chart_paired.sort_values("change_pct_points")
                 chart_paired["label"] = (
                     chart_paired["facility"].apply(
-                        lambda t: shorten(t, 30)
+                        lambda t: shorten(t, 24)
                     )
                     + " | "
                     + chart_paired["contingency_description"].apply(
-                        lambda t: shorten(t, 40)
+                        lambda t: shorten(t, 30)
                     )
                 )
 
                 fig = px.bar(
                     chart_paired,
-                    x="label",
-                    y="change_pct_points",
-                    color="change_pct_points",
-                    hover_data=["facility", "contingency_description"],
+                    x="change_pct_points",
+                    y="label",
+                    color="change_direction",
+                    orientation="h",
+                    color_discrete_map={
+                        "Increase": "#E76F51",
+                        "Decrease": "#4EA8DE"
+                    },
+                    hover_data={
+                        "facility": True,
+                        "contingency_description": True,
+                        "change_pct_points": ":.1f",
+                        "label": False,
+                        "change_direction": False
+                    },
                     title=f"Change: {sensitivity} minus {base}",
                     labels={
                         "label": "Facility | Contingency",
                         "change_pct_points":
-                            "Loading Change (Percentage Points)"
+                            "Loading Change (Percentage Points)",
+                        "change_direction": "Change"
                     }
                 )
-
-                fig.update_layout(xaxis=dict(tickangle=-45))
+                fig.add_vline(x=0, line_color="#A9B8CA", line_width=1)
+                fig.update_layout(
+                    height=max(360, 34 * len(chart_paired)),
+                    margin=dict(l=24, r=24, t=75, b=50),
+                    yaxis=dict(title=None, automargin=True, tickfont=dict(size=11)),
+                    xaxis=dict(
+                        title="Loading Change (Percentage Points)",
+                        zeroline=True,
+                        tickformat=".1f"
+                    ),
+                    legend=dict(
+                        title=None,
+                        orientation="h",
+                        yanchor="bottom",
+                        y=1.02,
+                        xanchor="left",
+                        x=0
+                    )
+                )
+                st.caption(
+                    "Chart shows the 15 largest changes by magnitude; "
+                    "the table above contains all paired findings."
+                )
 
                 st.plotly_chart(
                     fig,
@@ -1503,16 +1511,4 @@ st.caption(
     "Traceability: Findings retain report, scenario, "
     "source page, and table references. Verify extracted "
     "values against the original PDF before engineering use."
-<<<<<<< HEAD
 )
-
-
-
-
-
-
-
-
-=======
-)
->>>>>>> 92a0271beb0e551c4745a7076956cf9b0f046eb3
